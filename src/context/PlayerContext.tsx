@@ -46,7 +46,6 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const [repeat, setRepeat] = useState<RepeatMode>('off');
   const [libraryVersion, setLibraryVersion] = useState(0);
   const [toast, setToast] = useState('');
-  const [favorites] = useState<Set<string>>(() => new Set(readLibrary().likedTracks.map((item) => item.id)));
   const toastTimer = useRef<number | undefined>(undefined);
 
   useEffect(() => {
@@ -144,9 +143,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const togglePlayback = useCallback(() => setIsPlaying((playing) => !playing), []);
   const setVolume = useCallback((value: number) => setVolumeState(Math.max(0, Math.min(1, value))), []);
   const cycleRepeat = useCallback(() => setRepeat((value) => value === 'off' ? 'all' : value === 'all' ? 'one' : 'off'), []);
-  const toggleFavorite = useCallback(() => {
-    if (track) toggleLikedTrack(track);
-  }, [track]);
+  const toggleFavorite = useCallback(() => { if (track) toggleLikedTrack(track); }, [track]);
   const setVideoPlaybackState = useCallback((playing: boolean, time?: number, videoDuration?: number) => {
     setIsPlaying(playing);
     if (time !== undefined && Number.isFinite(time)) setCurrentTime(time);
@@ -160,10 +157,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       title: track.title,
       artist: track.artist,
       album: track.album,
-      artwork: artwork ? [
-        { src: artwork, sizes: '512x512', type: 'image/jpeg' },
-        { src: track.artworkUrl, sizes: '256x256', type: 'image/jpeg' },
-      ] : [],
+      artwork: artwork ? [{ src: artwork, sizes: '512x512', type: 'image/jpeg' }] : [],
     });
     const handlers: Array<[MediaSessionAction, MediaSessionActionHandler | null]> = [
       ['play', () => setIsPlaying(true)],
@@ -175,7 +169,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
       ['seekforward', (details) => seek(Math.min(duration || track.durationSec, currentTime + (details.seekOffset ?? 10)))],
     ];
     for (const [action, handler] of handlers) {
-      try { navigator.mediaSession.setActionHandler(action, handler); } catch { /* Action is unsupported by this browser. */ }
+      try { navigator.mediaSession.setActionHandler(action, handler); } catch { /* Browser does not support this action. */ }
     }
     return () => {
       for (const [action] of handlers) {
@@ -188,7 +182,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     if (!track || !('mediaSession' in navigator)) return;
     navigator.mediaSession.playbackState = isPlaying ? 'playing' : 'paused';
     if (duration > 0) {
-      try { navigator.mediaSession.setPositionState({ duration, playbackRate: 1, position: Math.min(currentTime, duration) }); } catch { /* Position state is optional on some browsers. */ }
+      try { navigator.mediaSession.setPositionState({ duration, playbackRate: 1, position: Math.min(currentTime, duration) }); } catch { /* Position state is optional. */ }
     }
   }, [track, isPlaying, currentTime, duration]);
 

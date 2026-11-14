@@ -1,7 +1,7 @@
 import { useEffect } from 'react';
 import { usePlayer } from '../context/PlayerContext';
 
-/** Keeps the compact player mounted during the full-screen transition for a continuous shared playback state. */
+/** Compact companion to the full-screen player; both remain driven by one shared player context. */
 export default function MiniPlayer({ onExpand }: { onExpand: () => void }) {
   const { track, isPlaying, togglePlayback } = usePlayer();
   useEffect(() => {

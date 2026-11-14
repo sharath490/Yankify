@@ -38,7 +38,7 @@ function writeLibrary(update: (current: LibraryData) => LibraryData): LibraryDat
     localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
     window.dispatchEvent(new Event(CHANGE_EVENT));
   } catch {
-    // The in-memory UI still works when storage is disabled or full.
+    // Keep the application usable if browser storage is unavailable or full.
   }
   return next;
 }
@@ -79,7 +79,12 @@ export function recordRecentlyPlayed(track: Track): void {
 export function createPlaylist(name: string): UserPlaylist | null {
   const cleanName = name.trim();
   if (!cleanName) return null;
-  const playlist: UserPlaylist = { id: `playlist:${crypto.randomUUID?.() ?? Date.now()}`, name: cleanName, trackIds: [], createdAt: Date.now() };
+  const playlist: UserPlaylist = {
+    id: `playlist:${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`}`,
+    name: cleanName,
+    trackIds: [],
+    createdAt: Date.now(),
+  };
   writeLibrary((current) => ({ ...current, playlists: [playlist, ...current.playlists] }));
   return playlist;
 }
@@ -92,6 +97,7 @@ export function addTrackToPlaylist(playlistId: string, track: Track): void {
   writeLibrary((current) => ({
     ...current,
     likedTracks: current.likedTracks.some((item) => item.id === track.id) ? current.likedTracks : current.likedTracks,
+    recentlyPlayed: current.recentlyPlayed.some((item) => item.id === track.id) ? current.recentlyPlayed : [track, ...current.recentlyPlayed].slice(0, 100),
     playlists: current.playlists.map((playlist) => playlist.id === playlistId && !playlist.trackIds.includes(track.id)
       ? { ...playlist, trackIds: [...playlist.trackIds, track.id] }
       : playlist),
@@ -99,7 +105,10 @@ export function addTrackToPlaylist(playlistId: string, track: Track): void {
 }
 
 export function removeTrackFromPlaylist(playlistId: string, trackId: string): void {
-  writeLibrary((current) => ({ ...current, playlists: current.playlists.map((playlist) => playlist.id === playlistId
-    ? { ...playlist, trackIds: playlist.trackIds.filter((id) => id !== trackId) }
-    : playlist) }));
+  writeLibrary((current) => ({
+    ...current,
+    playlists: current.playlists.map((playlist) => playlist.id === playlistId
+      ? { ...playlist, trackIds: playlist.trackIds.filter((id) => id !== trackId) }
+      : playlist),
+  }));
 }
