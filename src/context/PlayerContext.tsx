@@ -1,5 +1,6 @@
-import { createContext, ReactNode, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { createContext, type ReactNode, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import type { Track } from '../types/music';
+import { readLibrary, recordRecentlyPlayed, toggleLikedTrack } from '../services/libraryService';
 
 export type PlayerMode = 'song' | 'video' | 'cassette';
 export type RepeatMode = 'off' | 'all' | 'one';
@@ -43,10 +44,10 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   const [volume, setVolumeState] = useState(0.8);
   const [shuffle, setShuffle] = useState(false);
   const [repeat, setRepeat] = useState<RepeatMode>('off');
-  const [favorites, setFavorites] = useState<Set<string>>(() => {
-    try { return new Set(JSON.parse(localStorage.getItem('yankify-favorites') ?? '[]') as string[]); }
-    catch { return new Set(); }
-  });
+  const [libraryVersion, setLibraryVersion] = useState(0);
+  const [toast, setToast] = useState('');
+  const [favorites] = useState<Set<string>>(() => new Set(readLibrary().likedTracks.map((item) => item.id)));
+  const toastTimer = useRef<number | undefined>(undefined);
 
   useEffect(() => {
     const audio = audioRef.current;
@@ -80,6 +81,26 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     };
   });
 
+  useEffect(() => {
+    const refresh = () => setLibraryVersion((value) => value + 1);
+    const mirrorChanged = (event: Event) => {
+      const message = (event as CustomEvent<string>).detail;
+      setToast(message || 'Switched to an available music source.');
+      window.clearTimeout(toastTimer.current);
+      toastTimer.current = window.setTimeout(() => setToast(''), 3200);
+    };
+    window.addEventListener('yankify:library-change', refresh);
+    window.addEventListener('storage', refresh);
+    window.addEventListener('yankify:mirror-switch', mirrorChanged);
+    return () => {
+      window.removeEventListener('yankify:library-change', refresh);
+      window.removeEventListener('storage', refresh);
+      window.removeEventListener('yankify:mirror-switch', mirrorChanged);
+      window.clearTimeout(toastTimer.current);
+    };
+  }, []);
+
+  const library = useMemo(() => readLibrary(), [libraryVersion]);
   const setQueue = useCallback((tracks: Track[]) => setQueueState(tracks), []);
   const playTrack = useCallback((nextTrack: Track, nextQueue?: Track[]) => {
     setTrack(nextTrack);
@@ -87,6 +108,7 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     setCurrentTime(0);
     setDuration(nextTrack.durationSec || 0);
     setIsPlaying(true);
+    recordRecentlyPlayed(nextTrack);
     if (nextTrack.youtubeVideoId && !nextTrack.audioUrl) setMode('video');
     else setMode('song');
   }, []);
@@ -110,28 +132,20 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
   }, [queue, track?.id, shuffle, repeat, playTrack]);
 
   const playNext = useCallback(() => advance(1), [advance]);
-  const playPrevious = useCallback(() => {
-    if (currentTime > 3) { seek(0); return; }
-    advance(-1);
-  }, [currentTime, advance]);
-
   const seek = useCallback((time: number) => {
     const nextTime = Math.max(0, Math.min(time, duration || track?.durationSec || time));
     setCurrentTime(nextTime);
     if (mode === 'song' && audioRef.current) audioRef.current.currentTime = nextTime;
   }, [duration, track?.durationSec, mode]);
-
+  const playPrevious = useCallback(() => {
+    if (currentTime > 3) { seek(0); return; }
+    advance(-1);
+  }, [currentTime, advance, seek]);
   const togglePlayback = useCallback(() => setIsPlaying((playing) => !playing), []);
   const setVolume = useCallback((value: number) => setVolumeState(Math.max(0, Math.min(1, value))), []);
   const cycleRepeat = useCallback(() => setRepeat((value) => value === 'off' ? 'all' : value === 'all' ? 'one' : 'off'), []);
   const toggleFavorite = useCallback(() => {
-    if (!track) return;
-    setFavorites((current) => {
-      const next = new Set(current);
-      if (next.has(track.id)) next.delete(track.id); else next.add(track.id);
-      localStorage.setItem('yankify-favorites', JSON.stringify([...next]));
-      return next;
-    });
+    if (track) toggleLikedTrack(track);
   }, [track]);
   const setVideoPlaybackState = useCallback((playing: boolean, time?: number, videoDuration?: number) => {
     setIsPlaying(playing);
@@ -139,14 +153,53 @@ export function PlayerProvider({ children }: { children: ReactNode }) {
     if (videoDuration !== undefined && Number.isFinite(videoDuration)) setDuration(videoDuration);
   }, []);
 
+  useEffect(() => {
+    if (!track || !('mediaSession' in navigator)) return;
+    const artwork = track.artworkUrl ? track.artworkUrl.replace(/\d+x\d+/g, '512x512') : '';
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: track.title,
+      artist: track.artist,
+      album: track.album,
+      artwork: artwork ? [
+        { src: artwork, sizes: '512x512', type: 'image/jpeg' },
+        { src: track.artworkUrl, sizes: '256x256', type: 'image/jpeg' },
+      ] : [],
+    });
+    const handlers: Array<[MediaSessionAction, MediaSessionActionHandler | null]> = [
+      ['play', () => setIsPlaying(true)],
+      ['pause', () => setIsPlaying(false)],
+      ['previoustrack', () => playPrevious()],
+      ['nexttrack', () => playNext()],
+      ['seekto', (details) => { if (details.seekTime !== undefined) seek(details.seekTime); }],
+      ['seekbackward', (details) => seek(Math.max(0, currentTime - (details.seekOffset ?? 10)))],
+      ['seekforward', (details) => seek(Math.min(duration || track.durationSec, currentTime + (details.seekOffset ?? 10)))],
+    ];
+    for (const [action, handler] of handlers) {
+      try { navigator.mediaSession.setActionHandler(action, handler); } catch { /* Action is unsupported by this browser. */ }
+    }
+    return () => {
+      for (const [action] of handlers) {
+        try { navigator.mediaSession.setActionHandler(action, null); } catch { /* Ignore unsupported actions. */ }
+      }
+    };
+  }, [track, playPrevious, playNext, seek, currentTime, duration]);
+
+  useEffect(() => {
+    if (!track || !('mediaSession' in navigator)) return;
+    navigator.mediaSession.playbackState = isPlaying ? 'playing' : 'paused';
+    if (duration > 0) {
+      try { navigator.mediaSession.setPositionState({ duration, playbackRate: 1, position: Math.min(currentTime, duration) }); } catch { /* Position state is optional on some browsers. */ }
+    }
+  }, [track, isPlaying, currentTime, duration]);
+
   const value = useMemo<PlayerContextValue>(() => ({
     track, queue, mode, isPlaying, currentTime, duration: duration || track?.durationSec || 0,
-    volume, shuffle, repeat, favorite: !!track && favorites.has(track.id), audioRef,
+    volume, shuffle, repeat, favorite: !!track && library.likedTracks.some((item) => item.id === track.id), audioRef,
     playTrack, setQueue, setMode, togglePlayback, playNext, playPrevious, seek,
     setVolume, setShuffle, cycleRepeat, toggleFavorite, setVideoPlaybackState,
-  }), [track, queue, mode, isPlaying, currentTime, duration, volume, shuffle, repeat, favorites, playTrack, setQueue, togglePlayback, playNext, playPrevious, seek, setVolume, cycleRepeat, toggleFavorite, setVideoPlaybackState]);
+  }), [track, queue, mode, isPlaying, currentTime, duration, volume, shuffle, repeat, library, playTrack, setQueue, togglePlayback, playNext, playPrevious, seek, setVolume, cycleRepeat, toggleFavorite, setVideoPlaybackState]);
 
-  return <PlayerContext.Provider value={value}>{children}<audio ref={audioRef} src={track?.audioUrl || undefined} preload="metadata" /></PlayerContext.Provider>;
+  return <PlayerContext.Provider value={value}>{children}<audio ref={audioRef} src={track?.audioUrl || undefined} preload="metadata" />{toast && <div role="status" className="fixed bottom-24 left-1/2 z-[120] -translate-x-1/2 rounded-full border border-white/10 bg-[#202127]/95 px-5 py-3 text-sm text-white shadow-xl backdrop-blur-2xl transition-all duration-300">{toast}</div>}</PlayerContext.Provider>;
 }
 
 export function usePlayer(): PlayerContextValue {
